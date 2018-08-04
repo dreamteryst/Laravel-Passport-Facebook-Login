@@ -1,110 +1,94 @@
 <?php
-
 namespace Danjdewhurst\PassportFacebookLogin;
 
+use Facebook\Facebook;
 use Illuminate\Http\Request;
-use Laravel\Passport\Bridge\User;
-use Laravel\Passport\Passport;
-use League\OAuth2\Server\Entities\UserEntityInterface;
 use League\OAuth2\Server\Exception\OAuthServerException;
-use League\OAuth2\Server\Grant\AbstractGrant;
-use League\OAuth2\Server\Repositories\RefreshTokenRepositoryInterface;
-use League\OAuth2\Server\Repositories\UserRepositoryInterface;
-use League\OAuth2\Server\RequestEvent;
-use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
-use Psr\Http\Message\ServerRequestInterface;
 
-class FacebookLoginRequestGrant extends AbstractGrant
+trait FacebookLoginTrait
 {
     /**
-     * @param UserRepositoryInterface         $userRepository
-     * @param RefreshTokenRepositoryInterface $refreshTokenRepository
-     */
-    public function __construct(
-        UserRepositoryInterface $userRepository,
-        RefreshTokenRepositoryInterface $refreshTokenRepository
-    ) {
-        $this->setUserRepository($userRepository);
-        $this->setRefreshTokenRepository($refreshTokenRepository);
-        $this->refreshTokenTTL = Passport::refreshTokensExpireIn();
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function respondToAccessTokenRequest(
-        ServerRequestInterface $request,
-        ResponseTypeInterface $responseType,
-        \DateInterval $accessTokenTTL
-    ) {
-        // Validate request
-        $client = $this->validateClient($request);
-        $scopes = $this->validateScopes($this->getRequestParameter('scope', $request));
-        $user = $this->validateUser($request);
-
-        // Finalize the requested scopes
-        $scopes = $this->scopeRepository->finalizeScopes($scopes, $this->getIdentifier(), $client, $user->getIdentifier());
-
-        // Issue and persist new tokens
-        $accessToken = $this->issueAccessToken($accessTokenTTL, $client, $user->getIdentifier(), $scopes);
-        $refreshToken = $this->issueRefreshToken($accessToken);
-
-        // Inject tokens into response
-        $responseType->setAccessToken($accessToken);
-        $responseType->setRefreshToken($refreshToken);
-
-        return $responseType;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function getIdentifier()
-    {
-        return 'facebook_login';
-    }
-
-    /**
-     * @param ServerRequestInterface $request
-     *
-     * @return UserEntityInterface
-     * @throws OAuthServerException
-     */
-    protected function validateUser(ServerRequestInterface $request)
-    {
-        $laravelRequest = new Request($request->getParsedBody());
-
-        $user = $this->getUserEntityByRequest($laravelRequest);
-
-        if ($user instanceof UserEntityInterface === false) {
-            $this->getEmitter()->emit(new RequestEvent(RequestEvent::USER_AUTHENTICATION_FAILED, $request));
-
-            throw OAuthServerException::invalidCredentials();
-        }
-
-        return $user;
-    }
-
-    /**
-     * Retrieve user by request.
+     * Logs a App\User in using a Facebook token via Passport
      *
      * @param \Illuminate\Http\Request $request
      *
-     * @return \Laravel\Passport\Bridge\User|null
+     * @return \Illuminate\Database\Eloquent\Model|null
      * @throws \League\OAuth2\Server\Exception\OAuthServerException
      */
-    protected function getUserEntityByRequest(Request $request)
+    public function loginFacebook(Request $request)
     {
-        if (is_null($model = config('auth.providers.users.model'))) {
-            throw OAuthServerException::serverError('Unable to determine user model from configuration.');
-        }
+        try {
+            /**
+             * Check if the 'fb_token' as passed.
+             */
+            if ($request->get('fb_token')) {
 
-        if (method_exists($model, 'loginFacebook')) {
-            $user = (new $model)->loginFacebook($request);
-        } else {
-            throw OAuthServerException::serverError('Unable to find loginFacebook method on user model.');
-        }
+                /**
+                 * Initialise Facebook SDK.
+                 */
+                $fb = new Facebook([
+                    'app_id' => config('facebook.app.id'),
+                    'app_secret' => config('facebook.app.secret'),
+                    'default_graph_version' => 'v2.5',
+                ]);
+                $fb->setDefaultAccessToken($request->get('fb_token'));
 
-        return ($user) ? new User($user->getKey()) : null;
+                /**
+                 * Make the Facebook request.
+                 */
+                $response = $fb->get('/me?locale=en_GB&fields=first_name,last_name,email,name,picture.width(320).height(320)');
+                $fbUser = $response->getDecodedBody();
+
+                /**
+                 * Check if the user has already signed up.
+                 */
+                $userModel = config('auth.providers.users.model');
+
+                /**
+                 * Create a new user if they haven't already signed up.
+                 */
+                $facebook_id_column = config('facebook.registration.facebook_id', 'facebook_id');
+                $name_column        = config('facebook.registration.name', 'name');
+                $first_name_column  = config('facebook.registration.first_name', 'first_name');
+                $last_name_column   = config('facebook.registration.last_name', 'last_name');
+                $email_column       = config('facebook.registration.email', 'email');
+                $password_column    = config('facebook.registration.password', 'password');
+                $picture_column     = config('facebook.registration.picture', 'picture');
+
+                $user = $userModel::where($facebook_id_column, $fbUser['id'])->first();
+
+                if (!$user) {
+                    $user = new $userModel();
+                    $user->{$facebook_id_column} = $fbUser['id'];
+
+                    if ($first_name_column) {
+                        $user->{$first_name_column} = $fbUser['first_name'];
+                    }
+                    if ($last_name_column) {
+                        $user->{$last_name_column} = $fbUser['last_name'];
+                    }
+                    if ($name_column) {
+                        $user->{$name_column} = $fbUser['name'];
+                    }
+
+                    $user->{$email_column}    = $fbUser['email'];
+                    $user->{$password_column} = bcrypt(uniqid('fb_', true)); // Random password.
+                    $user->{$picture_column}  = $fbUser['picture']['data']['url'];
+                    $user->save();
+
+                    /**
+                     * Attach a role to the user.
+                     */
+                    if (!is_null(config('facebook.registration.attach_role'))) {
+                        $user->attachRole(config('facebook.registration.attach_role'));
+                    }
+                }
+
+                return $user;
+            }
+        } catch (\Exception $e) {
+            throw OAuthServerException::accessDenied($e->getMessage());
+        }
+        return null;
     }
 }
