@@ -53,6 +53,7 @@ Install with composer `composer require danjdewhurst/laravel-passport-facebook-l
         'first_name'  => env('FIRST_NAME_COLUMN', 'first_name'),
         'last_name'   => env('LAST_NAME_COLUMN', 'last_name'),
         'name'        => env('NAME_COLUMN', 'name'),
+        'picture'     => env('PICTURE_COLUMN', 'picture'),
         'attach_role' => env('ATTACH_ROLE', null),
     ],
 ```
@@ -70,6 +71,7 @@ Install with composer `composer require danjdewhurst/laravel-passport-facebook-l
 ## Assumptions:
 * Your `User` model has the folowing fields:
 * * `facebook_id`
+* * `picture`
 * * `name` or `first_name` & `last_name`
 * * `email`
 * * `password`
